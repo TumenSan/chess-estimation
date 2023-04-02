@@ -15,5 +15,8 @@
   "bugs": {
     "url": "https://github.com/TumenSan/chess-estimation/issues"
   },
-  "homepage": "https://github.com/TumenSan/chess-estimation#readme"
+  "homepage": "https://github.com/TumenSan/chess-estimation#readme",
+  "dependencies": {
+    "amqplib": "^0.10.3"
+  }
 }
