@@ -1,7 +1,7 @@
 //брокер rabbitmq
 const amqp = require("amqplib");
 
-var channelConsumer, connection;
+var channelConsumer, channelProducer, connection;
 
 connectQueue(); // call connectQueue function
 
@@ -10,17 +10,19 @@ async function connectQueue() {
         //connect to 'test-queue', create one if does not exist already
         connection = await amqp.connect("amqp://user1:password1@rabbitmq:5672");
         channelConsumer = await connection.createConfirmChannel();
+        channelProducer = await connection.createConfirmChannel();
 
         await channelConsumer.assertQueue("engine-to-estimation", { durable: true });
+        await channelProducer.assertQueue("estimation-to-back", { durable: true });
 
-        console.log('"engine-to-estimation"');
+        console.log('"engine-to-estimation" and "estimation-to-back" are created');
 
         channelConsumer.consume("engine-to-estimation", async (data) => {
             try {
                 let dataJson = JSON.parse(data.content.toString());
                 console.log("Received message: " + data.content.toString());
 
-                let est = "chess-est";
+                let est = dataJson;
 
                 // Create the response object with the request ID for correlation
                 const response = {
@@ -29,7 +31,7 @@ async function connectQueue() {
                 };
 
                 // Publish the response to the exchange with the routing key of the request ID
-                //await channelConsumer.sendToQueue("engine-to-estimation", Buffer.from(JSON.stringify(response)));
+                await channelConsumer.sendToQueue("estimation-to-back", Buffer.from(JSON.stringify(est)));
 
                 // Print information about the sent response
                 console.log("Response sent: " + JSON.stringify(response));
