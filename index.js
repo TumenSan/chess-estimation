@@ -9,7 +9,7 @@ var channelConsumer, channelProducer, connection;
 async function connectQueue() {
     try {
         //connect to 'test-queue', create one if does not exist already
-        connection = await amqp.connect("amqp://user1:password1@localhost:5672");
+        connection = await amqp.connect("amqp://user1:password1@rabbitmq:5672");
         channelConsumer = await connection.createConfirmChannel();
         channelProducer = await connection.createConfirmChannel();
 
