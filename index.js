@@ -1997,6 +1997,51 @@ function colorflip(pos) {
     };
 }
 
+function doMove(pos, from, to, promotion) {
+    if (pos.b[from.x][from.y].toUpperCase() != pos.b[from.x][from.y]) {
+        var r = colorflip(doMove(colorflip(pos), {
+            x: from.x,
+            y: 7 - from.y
+        }, {
+            x: to.x,
+            y: 7 - to.y
+        }, promotion));
+        r.m[1]++;
+        return r;
+    }
+    var r = colorflip(colorflip(pos));
+    r.w = !r.w;
+    if (from.x == 7 && from.y == 7) r.c[0] = false;
+    if (from.x == 0 && from.y == 7) r.c[1] = false;
+    if (to.x == 7 && to.y == 0) r.c[2] = false;
+    if (to.x == 0 && to.y == 0) r.c[3] = false;
+    if (from.x == 4 && from.y == 7) r.c[0] = r.c[1] = false;
+    r.e = pos.b[from.x][from.y] == 'P' && from.y == 6 && to.y == 4 ? [from.x, 5] : null;
+    if (pos.b[from.x][from.y] == 'K') {
+        if (Math.abs(from.x - to.x) > 1) {
+            r.b[from.x][from.y] = '-';
+            r.b[to.x][to.y] = 'K';
+            r.b[to.x > 4 ? 5 : 3][to.y] = 'R';
+            r.b[to.x > 4 ? 7 : 0][to.y] = '-';
+            return r;
+        }
+    }
+    if (pos.b[from.x][from.y] == 'P' && to.y == 0) {
+        r.b[to.x][to.y] = promotion != null ? promotion : 'Q';
+    } else if (pos.b[from.x][from.y] == 'P' &&
+        pos.e != null && to.x == pos.e[0] && to.y == pos.e[1] &&
+        Math.abs(from.x - to.x) == 1) {
+        r.b[to.x][from.y] = '-';
+        r.b[to.x][to.y] = pos.b[from.x][from.y];
+
+    } else {
+        r.b[to.x][to.y] = pos.b[from.x][from.y];
+    }
+    r.b[from.x][from.y] = '-';
+    r.m[0] = (pos.b[from.x][from.y] == 'P' || pos.b[to.x][to.y] != '-') ? 0 : r.m[0] + 1;
+    return r;
+}
+
 function bounds(x, y) {
     return x >= 0 && x <= 7 && y >= 0 && y <= 7;
 }
@@ -2009,6 +2054,18 @@ Board.KingPositionEstimate();
 let position1 = Board.parseFEN('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3');
 console.log(position1);
 console.log(Board.getStaticEvalList(position1));
+let from1 = {
+    x: 5,
+    y: 7
+}
+let to1 = {
+    x: 1,
+    y: 3
+}
+let newPos = doMove(position1, from1, to1)
+console.log(newPos);
+console.log(Board.generateFEN(newPos));
+//doMove(pos, moves[i].from, moves[i].to, moves[i].p)
 
 //fen: 'r1bqkb1r/ppp2ppp/2n2n2/3pp1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 0 5'
 //r1bq1b1r/p4kpp/2n5/4p2n/8/8/PPPP1PPP/RNB1K2R w KQ - 0 11
