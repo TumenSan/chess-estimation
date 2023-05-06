@@ -4,12 +4,12 @@ const amqp = require("amqplib");
 
 var channelConsumer, channelProducer, connection;
 
-//connectQueue(); // call connectQueue function
+connectQueue(); // call connectQueue function
 
 async function connectQueue() {
     try {
         //connect to 'test-queue', create one if does not exist already
-        connection = await amqp.connect("amqp://user1:password1@rabbitmq:5672");
+        connection = await amqp.connect("amqp://user1:password1@localhost:5672");
         channelConsumer = await connection.createConfirmChannel();
         channelProducer = await connection.createConfirmChannel();
 
@@ -25,17 +25,40 @@ async function connectQueue() {
 
                 let est = dataJson;
 
-                // Create the response object with the request ID for correlation
-                const response = {
-                    answer: est,
-                    requestId: dataJson.requestId
-                };
+                let gameReq;
+                let staticEval;
+
+                if(est.pgn){
+                    // Create the response object with the request ID for correlation
+                    gameReq = {
+                        //answer: est,
+                        pgn: est.pgn,
+                        conclusion: est.conclusion,
+                        requestId: dataJson.requestId
+                    };
+                } else {
+                    // Create the response object with the request ID for correlation
+                    gameReq = {
+                        //answer: est,
+                        fen: dataJson.fen,
+                        answerBestMove: dataJson.answerBestMove,
+                        answerMove: dataJson.answerMove,
+                        answerNewFen: dataJson.answerNewFen,
+                        answerEstimate: dataJson.answerEstimate,
+                        requestId: dataJson.requestId
+                    };
+
+                    let position1 = parseFEN(gameReq.fen);
+                    console.log(position1);
+                    staticEval = getStaticEvalList(position1);
+                    console.log(staticEval);
+                }
 
                 // Publish the response to the exchange with the routing key of the request ID
-                await channelConsumer.sendToQueue("estimation-to-back", Buffer.from(JSON.stringify(est)));
+                await channelConsumer.sendToQueue("estimation-to-back", Buffer.from(JSON.stringify(gameReq)));
 
                 // Print information about the sent response
-                console.log("Response sent: " + JSON.stringify(response));
+                console.log("Response sent: " + JSON.stringify(gameReq));
 
                 // Подтверждение обработки сообщения
                 await channelConsumer.ack(data);
@@ -52,333 +75,187 @@ async function connectQueue() {
     }
 }
 
-class BoardInGame {
-    constructor (fen) {
-        this.fen = fen;
-        const parts = fen.split(' ');
-        const rows = parts[0].split('/');
-        console.log(rows);
-
-        this.board = {};
-        rows.forEach((row, i) => {
-            let col = 0;
-            row.split('').forEach((char) => {
-                let charParse = parseInt(char);
-                if (!isNaN(charParse)) {
-                    for (let j = 0; j < charParse; j++){
-                        const pos = `${String.fromCharCode('a'.charCodeAt() + col)}${8-i}`;
-                        this.board[pos] = null;
-                        ++col;
-                    }
-                } else {
-                    const pos = `${String.fromCharCode('a'.charCodeAt() + col)}${8-i}`;
-                    this.board[pos] = char;
-                    col++;
-                }
-            });
-        });
-        for (let i = 0; i < 8; i++){
-
+function parseFEN(fen) {
+    var board = new Array(8);
+    for (var i = 0; i < 8; i++) board[i] = new Array(8);
+    var a = fen.replace(/^\s+/, '').split(' '),
+        s = a[0],
+        x, y;
+    for (x = 0; x < 8; x++)
+        for (y = 0; y < 8; y++) {
+            board[x][y] = '-';
         }
-        //console.log(this.board);
+    x = 0, y = 0;
+    for (var i = 0; i < s.length; i++) {
+        if (s[i] == ' ') break;
+        if (s[i] == '/') {
+            x = 0;
+            y++;
+        } else {
+            if (!bounds(x, y)) continue;
+            if ('KQRBNP'.indexOf(s[i].toUpperCase()) != -1) {
+                board[x][y] = s[i];
+                x++;
+            } else if ('0123456789'.indexOf(s[i]) != -1) {
+                x += parseInt(s[i]);
+            } else x++;
+        }
     }
-
-    parseFEN(fen) {
-        var board = new Array(8);
-        for (var i = 0; i < 8; i++) board[i] = new Array(8);
-        var a = fen.replace(/^\s+/, '').split(' '),
-            s = a[0],
-            x, y;
-        for (x = 0; x < 8; x++)
-            for (y = 0; y < 8; y++) {
-                board[x][y] = '-';
-            }
-        x = 0, y = 0;
-        for (var i = 0; i < s.length; i++) {
-            if (s[i] == ' ') break;
-            if (s[i] == '/') {
-                x = 0;
-                y++;
-            } else {
-                if (!bounds(x, y)) continue;
-                if ('KQRBNP'.indexOf(s[i].toUpperCase()) != -1) {
-                    board[x][y] = s[i];
-                    x++;
-                } else if ('0123456789'.indexOf(s[i]) != -1) {
-                    x += parseInt(s[i]);
-                } else x++;
-            }
-        }
-        var castling, enpassant, whitemove = !(a.length > 1 && a[1] == 'b');
-        if (a.length > 2) {
-            castling = [a[2].indexOf('K') != -1, a[2].indexOf('Q') != -1,
-                a[2].indexOf('k') != -1, a[2].indexOf('q') != -1
-            ];
-        } else {
-            castling = [true, true, true, true];
-        }
-        if (a.length > 3 && a[3].length == 2) {
-            var ex = 'abcdefgh'.indexOf(a[3][0]);
-            var ey = '87654321'.indexOf(a[3][1]);
-            enpassant = (ex >= 0 && ey >= 0) ? [ex, ey] : null;
-        } else {
-            enpassant = null;
-        }
-        var movecount = [(a.length > 4 && !isNaN(a[4]) && a[4] != '') ? parseInt(a[4]) : 0,
-            (a.length > 5 && !isNaN(a[5]) && a[5] != '') ? parseInt(a[5]) : 1
+    var castling, enpassant, whitemove = !(a.length > 1 && a[1] == 'b');
+    if (a.length > 2) {
+        castling = [a[2].indexOf('K') != -1, a[2].indexOf('Q') != -1,
+            a[2].indexOf('k') != -1, a[2].indexOf('q') != -1
         ];
-        return {
-            b: board,
-            c: castling,
-            e: enpassant,
-            w: whitemove,
-            m: movecount
-        };
+    } else {
+        castling = [true, true, true, true];
     }
-
-    generateFEN(pos) {
-        var s = '',
-            f = 0,
-            castling = pos.c,
-            enpassant = pos.e,
-            board = pos.b;
-        for (var y = 0; y < 8; y++) {
-            for (var x = 0; x < 8; x++) {
-                if (board[x][y] == '-') {
-                    f++;
-                } else {
-                    if (f > 0) s += f, f = 0;
-                    s += board[x][y];
-                }
-            }
-            if (f > 0) s += f, f = 0;
-            if (y < 7) s += '/';
-        }
-        s += ' ' + (pos.w ? 'w' : 'b') +
-            ' ' + ((castling[0] || castling[1] || castling[2] || castling[3]) ?
-                ((castling[0] ? 'K' : '') + (castling[1] ? 'Q' : '') +
-                    (castling[2] ? 'k' : '') + (castling[3] ? 'q' : '')) :
-                '-') +
-            ' ' + (enpassant == null ? '-' : ('abcdefgh' [enpassant[0]] + '87654321' [enpassant[1]])) +
-            ' ' + pos.m[0] + ' ' + pos.m[1];
-        return s;
+    if (a.length > 3 && a[3].length == 2) {
+        var ex = 'abcdefgh'.indexOf(a[3][0]);
+        var ey = '87654321'.indexOf(a[3][1]);
+        enpassant = (ex >= 0 && ey >= 0) ? [ex, ey] : null;
+    } else {
+        enpassant = null;
     }
+    var movecount = [(a.length > 4 && !isNaN(a[4]) && a[4] != '') ? parseInt(a[4]) : 0,
+        (a.length > 5 && !isNaN(a[5]) && a[5] != '') ? parseInt(a[5]) : 1
+    ];
+    return {
+        b: board,
+        c: castling,
+        e: enpassant,
+        w: whitemove,
+        m: movecount
+    };
+}
 
-     getStaticEvalList(pos) {
-        var posfen = Board.generateFEN(pos);
-        for (var si = 0; si < _staticEvalListCache.length; si++)
-            if (_staticEvalListCache[si][0] == posfen) return _staticEvalListCache[si][1];
-
-        var data = _staticEvalData;
-        var grouplist = [],
-            midindex = null,
-            endindex = null,
-            maincode = null;
-        for (var i = 0; i < data.length; i++) {
-            if (data[i].name == "Middle game evaluation") midindex = i;
-            if (data[i].name == "End game evaluation") endindex = i;
-            if (data[i].name == "Main evaluation") maincode = data[i].code;
-        }
-        if (midindex == null || endindex == null || maincode == null) return;
-        var zero = function() {
-            return 0;
-        };
-        for (var i = 0; i < data.length; i++) {
-            var n = data[i].name.toLowerCase().replace(/ /g, "_");
-            while (i != midindex && i != endindex && maincode.indexOf("$" + n + "(") >= 0) {
-                try {
-                    maincode = maincode.replace("$" + n + "(", "(function(){return " + eval("$" + n + "(pos)") + ";})(");
-                } catch (e) {
-                    console.log(e.message);
-                    return [];
-                }
+function generateFEN(pos) {
+    var s = '',
+        f = 0,
+        castling = pos.c,
+        enpassant = pos.e,
+        board = pos.b;
+    for (var y = 0; y < 8; y++) {
+        for (var x = 0; x < 8; x++) {
+            if (board[x][y] == '-') {
+                f++;
+            } else {
+                if (f > 0) s += f, f = 0;
+                s += board[x][y];
             }
-            if (data[midindex].code.indexOf("$" + n + "(") < 0 &&
-                data[endindex].code.indexOf("$" + n + "(") < 0) continue;
-            var code = data[i].code,
-                list = [];
-            for (var j = 0; j < data.length; j++) {
-                if (!data[j].graph || data[j].group != data[i].group || i == j) continue;
-                var n2 = data[j].name.toLowerCase().replace(/ /g, "_");
-                code = code.replace("$" + n2 + "(", "$g-" + n2 + "(").replace("$" + n2 + "(", "$g-" + n2 + "(");
-                list.push(n2);
-            }
-            if (data[i].graph) list.push(n);
-            for (var j = 0; j < list.length; j++) {
-                var n2 = list[j];
-                if (code.indexOf("$g-" + n2 + "(") < 0 && !data[i].graph) continue;
-                var mw = 0,
-                    mb = 0,
-                    ew = 0,
-                    eb = 0,
-                    func = null;
-                try {
-                    eval("func = " + code.replace("$g-" + n2 + "(", "$" + n2 + "(")
-                        .replace("$g-" + n2 + "(", "$" + n2 + "(")
-                        .replace(/\$g\-[a-z_]+\(/g, "zero(") + ";");
-                    if (data[midindex].code.indexOf("$" + n + "(pos") >= 0) mw = func(pos);
-                    if (data[midindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) mb = func(colorflip(pos));
-                    if (data[endindex].code.indexOf("$" + n + "(pos") >= 0) ew = func(pos);
-                    if (data[endindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) eb = func(colorflip(pos));
-                } catch (e) {
-                    alert(e.message);
-                    return [];
-                }
-                var evals = [mw - mb, ew - eb];
-                var index = grouplist.map(function(e) {
-                    return e.elem;
-                }).indexOf(n2);
-                if (index < 0) {
-                    grouplist.push({
-                        group: data[i].group,
-                        elem: n2,
-                        item: evals,
-                        hidden: false,
-                        mc: pos.m[1]
-                    });
-                } else {
-                    grouplist[index].item[0] += evals[0];
-                    grouplist[index].item[1] += evals[1];
-                }
-            }
-
         }
-        grouplist.sort(function(a, b) {
-            return (a.group > b.group) ? 1 : ((b.group > a.group) ? -1 : 0);
-        });
-        maincode = maincode.replace("function $$(pos)", "function $$(PMG,PEG)")
-            .replace("$middle_game_evaluation(pos)", "PMG")
-            .replace("$end_game_evaluation(pos)", "PEG")
-        var mainfunc = eval("(" + maincode + ")");
-        for (var i = 0; i < grouplist.length; i++) {
-            grouplist[i].item.push(mainfunc(grouplist[i].item[0], grouplist[i].item[1]) - mainfunc(0, 0));
-        }
-        grouplist.push({
-            group: "Tempo",
-            elem: "tempo",
-            item: [mainfunc(0, 0), mainfunc(0, 0), mainfunc(0, 0)],
-            hidden: false,
-            mc: pos.m[1]
-        });
-
-        _staticEvalListCache.push([posfen, grouplist]);
-        if (_staticEvalListCache.length > _staticEvalListCacheSize) _staticEvalListCache.shift();
-        return grouplist;
+        if (f > 0) s += f, f = 0;
+        if (y < 7) s += '/';
     }
+    s += ' ' + (pos.w ? 'w' : 'b') +
+        ' ' + ((castling[0] || castling[1] || castling[2] || castling[3]) ?
+            ((castling[0] ? 'K' : '') + (castling[1] ? 'Q' : '') +
+                (castling[2] ? 'k' : '') + (castling[3] ? 'q' : '')) :
+            '-') +
+        ' ' + (enpassant == null ? '-' : ('abcdefgh' [enpassant[0]] + '87654321' [enpassant[1]])) +
+        ' ' + pos.m[0] + ' ' + pos.m[1];
+    return s;
+}
 
-    KingPositionEstimate(){
-        let WhiteScore = 0;
-        let BlackScore = 0;
+function getStaticEvalList(pos) {
+    var posfen = generateFEN(pos);
+    for (var si = 0; si < _staticEvalListCache.length; si++)
+        if (_staticEvalListCache[si][0] == posfen) return _staticEvalListCache[si][1];
 
-        let WhiteKingPosition = null
-        let BlackKingPosition = null;
-
-        for (let key in this.board) {
-            if (this.board[key] === 'K')
-                WhiteKingPosition = key;
-            if (this.board[key] === 'k')
-                BlackKingPosition = key;
-            if ((WhiteKingPosition) && (BlackKingPosition))
-                break;
+    var data = _staticEvalData;
+    var grouplist = [],
+        midindex = null,
+        endindex = null,
+        maincode = null;
+    for (var i = 0; i < data.length; i++) {
+        if (data[i].name == "Middle game evaluation") midindex = i;
+        if (data[i].name == "End game evaluation") endindex = i;
+        if (data[i].name == "Main evaluation") maincode = data[i].code;
+    }
+    if (midindex == null || endindex == null || maincode == null) return;
+    var zero = function() {
+        return 0;
+    };
+    for (var i = 0; i < data.length; i++) {
+        var n = data[i].name.toLowerCase().replace(/ /g, "_");
+        while (i != midindex && i != endindex && maincode.indexOf("$" + n + "(") >= 0) {
+            try {
+                maincode = maincode.replace("$" + n + "(", "(function(){return " + eval("$" + n + "(pos)") + ";})(");
+            } catch (e) {
+                console.log(e.message);
+                return [];
+            }
         }
-        console.log(`${WhiteKingPosition}, ${BlackKingPosition}`);
-        console.log(`${this.board["e1"]}`);
-
-        const columns = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-        const kingColumn = WhiteKingPosition[0];
-        const kingRow = Number(WhiteKingPosition[1]);
-        const neighbors = [];
-
-        for (let i = -1; i <= 1; i++) {
-            const row = kingRow + i;
-            if (row < 1 || row > 8) continue;
-
-            for (let j = -1; j <= 1; j++) {
-                if (i === 0 && j === 0) continue;
-
-                const column = columns[columns.indexOf(kingColumn) + j];
-                if (column === undefined) continue;
-
-                const neighborKey = column + row;
-                const neighborValue = this.board[neighborKey];
-                neighbors.push({ key: neighborKey, value: neighborValue });
+        if (data[midindex].code.indexOf("$" + n + "(") < 0 &&
+            data[endindex].code.indexOf("$" + n + "(") < 0) continue;
+        var code = data[i].code,
+            list = [];
+        for (var j = 0; j < data.length; j++) {
+            if (!data[j].graph || data[j].group != data[i].group || i == j) continue;
+            var n2 = data[j].name.toLowerCase().replace(/ /g, "_");
+            code = code.replace("$" + n2 + "(", "$g-" + n2 + "(").replace("$" + n2 + "(", "$g-" + n2 + "(");
+            list.push(n2);
+        }
+        if (data[i].graph) list.push(n);
+        for (var j = 0; j < list.length; j++) {
+            var n2 = list[j];
+            if (code.indexOf("$g-" + n2 + "(") < 0 && !data[i].graph) continue;
+            var mw = 0,
+                mb = 0,
+                ew = 0,
+                eb = 0,
+                func = null;
+            try {
+                eval("func = " + code.replace("$g-" + n2 + "(", "$" + n2 + "(")
+                    .replace("$g-" + n2 + "(", "$" + n2 + "(")
+                    .replace(/\$g\-[a-z_]+\(/g, "zero(") + ";");
+                if (data[midindex].code.indexOf("$" + n + "(pos") >= 0) mw = func(pos);
+                if (data[midindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) mb = func(colorflip(pos));
+                if (data[endindex].code.indexOf("$" + n + "(pos") >= 0) ew = func(pos);
+                if (data[endindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) eb = func(colorflip(pos));
+            } catch (e) {
+                alert(e.message);
+                return [];
+            }
+            var evals = [mw - mb, ew - eb];
+            var index = grouplist.map(function(e) {
+                return e.elem;
+            }).indexOf(n2);
+            if (index < 0) {
+                grouplist.push({
+                    group: data[i].group,
+                    elem: n2,
+                    item: evals,
+                    hidden: false,
+                    mc: pos.m[1]
+                });
+            } else {
+                grouplist[index].item[0] += evals[0];
+                grouplist[index].item[1] += evals[1];
             }
         }
 
-        console.log(neighbors);
     }
-
-    MaterialEstimate(){
-        let score = 0;
-        const materialValues = {
-            'P': 1,
-            'N': 3,
-            'B': 3,
-            'R': 5,
-            'Q': 9
-        };
-
-        for (let cell in this.board) {
-            if (this.board[cell]){
-                const piece = this.board[cell].charAt(0);
-                if (piece in materialValues) {
-                    score += materialValues[piece];
-                } else if (piece.toUpperCase() in materialValues) {
-                    score -= materialValues[piece.toUpperCase()];
-                }
-            }
-        }
-
-        console.log('Material score:', score);
+    grouplist.sort(function(a, b) {
+        return (a.group > b.group) ? 1 : ((b.group > a.group) ? -1 : 0);
+    });
+    maincode = maincode.replace("function $$(pos)", "function $$(PMG,PEG)")
+        .replace("$middle_game_evaluation(pos)", "PMG")
+        .replace("$end_game_evaluation(pos)", "PEG")
+    var mainfunc = eval("(" + maincode + ")");
+    for (var i = 0; i < grouplist.length; i++) {
+        grouplist[i].item.push(mainfunc(grouplist[i].item[0], grouplist[i].item[1]) - mainfunc(0, 0));
     }
+    grouplist.push({
+        group: "Tempo",
+        elem: "tempo",
+        item: [mainfunc(0, 0), mainfunc(0, 0), mainfunc(0, 0)],
+        hidden: false,
+        mc: pos.m[1]
+    });
 
-    FigurePositionEstimate(){
-        let score = 0;
-        const materialValues = {
-            'P': 1,
-            'N': 3,
-            'B': 3,
-            'R': 5,
-            'Q': 9
-        };
-
-        for (let cell in this.board) {
-            if (this.board[cell]){
-                const piece = this.board[cell].charAt(0);
-                if (piece in materialValues) {
-                    score += materialValues[piece];
-                } else if (piece.toUpperCase() in materialValues) {
-                    score -= materialValues[piece.toUpperCase()];
-                }
-            }
-        }
-
-        console.log('Score:', score);
-    }
-
-    PawnPositionEstimate(){
-        let score = 0;
-        const materialValues = {
-            'P': 1,
-            'N': 3,
-            'B': 3,
-            'R': 5,
-            'Q': 9
-        };
-
-        for (let cell in this.board) {
-            if (this.board[cell]){
-                const piece = this.board[cell].charAt(0);
-                if (piece in materialValues) {
-                    score += materialValues[piece];
-                } else if (piece.toUpperCase() in materialValues) {
-                    score -= materialValues[piece.toUpperCase()];
-                }
-            }
-        }
-
-        console.log('Score:', score);
-    }
+    _staticEvalListCache.push([posfen, grouplist]);
+    if (_staticEvalListCache.length > _staticEvalListCacheSize) _staticEvalListCache.shift();
+    return grouplist;
 }
 
 _staticEvalData = (function() {
@@ -2046,8 +1923,10 @@ function bounds(x, y) {
     return x >= 0 && x <= 7 && y >= 0 && y <= 7;
 }
 
+
 var _staticEvalListCache = [],
     _staticEvalListCacheSize = 20;
+/*
 const Board = new BoardInGame('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3');
 Board.MaterialEstimate();
 Board.KingPositionEstimate();
@@ -2065,6 +1944,8 @@ let to1 = {
 let newPos = doMove(position1, from1, to1)
 console.log(newPos);
 console.log(Board.generateFEN(newPos));
+
+ */
 //doMove(pos, moves[i].from, moves[i].to, moves[i].p)
 
 //fen: 'r1bqkb1r/ppp2ppp/2n2n2/3pp1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 0 5'
