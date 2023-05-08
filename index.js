@@ -1,9 +1,21 @@
 //брокер rabbitmq
 const amqp = require("amqplib");
 //const BoardInGame = require("./BoardInGame")
+require("dotenv").config();
+const mongoose = require("mongoose");
+const estimationAnalysisModel = require("./models/estimationAnalysisModel");
+
+async function connectDatabase() {
+    await mongoose.connect(process.env.DB_URL, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+    });
+    console.log("DB connected");
+}
 
 var channelConsumer, channelProducer, connection;
 
+connectDatabase(); //connect DB
 connectQueue(); // call connectQueue function
 
 async function connectQueue() {
@@ -34,9 +46,15 @@ async function connectQueue() {
                         //answer: est,
                         pgn: est.pgn,
                         conclusion: est.conclusion,
-                        requestId: dataJson.requestId
+                        idGame: dataJson.idGame
                     };
-                } else {
+
+                    //getStaticEvalList
+                    let conclusionString = JSON.stringify(gameReq.conclusion);
+                    let game = await estimationAnalysisModel.create({ game: gameReq.idGame, gameAnalysis: conclusionString });
+                    console.log("any game: ", game);
+                }
+                else {
                     // Create the response object with the request ID for correlation
                     gameReq = {
                         //answer: est,
