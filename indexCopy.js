@@ -1,289 +1,6 @@
-//брокер rabbitmq
-const amqp = require("amqplib");
-//const BoardInGame = require("./BoardInGame")
-require("dotenv").config();
-const mongoose = require("mongoose");
-const estimationAnalysisModel = require("./models/estimationAnalysisModel");
-
-async function connectDatabase() {
-    await mongoose.connect(process.env.DB_URL, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-    });
-    console.log("DB connected");
-}
-
+var _staticEvalListCache = [],
+    _staticEvalListCacheSize = 20;
 var channelConsumer, channelProducer, connection;
-
-connectDatabase(); //connect DB
-connectQueue(); // call connectQueue function
-
-async function connectQueue() {
-    try {
-        //connect to 'test-queue', create one if does not exist already
-        connection = await amqp.connect("amqp://user1:password1@rabbitmq:5672");
-        channelConsumer = await connection.createConfirmChannel();
-        channelProducer = await connection.createConfirmChannel();
-
-        await channelConsumer.assertQueue("engine-to-estimation", { durable: true });
-        await channelProducer.assertQueue("estimation-to-back", { durable: true });
-
-        console.log('"engine-to-estimation" and "estimation-to-back" are created');
-
-        channelConsumer.consume("engine-to-estimation", async (data) => {
-            try {
-                let dataJson = JSON.parse(data.content.toString());
-                console.log("Received message: " + data.content.toString());
-
-                let est = dataJson;
-
-                let gameReq;
-                let staticEval;
-
-                if(est.pgn){
-                    // Create the response object with the request ID for correlation
-                    gameReq = {
-                        //answer: est,
-                        pgn: est.pgn,
-                        conclusion: est.conclusion,
-                        userId: dataJson.userId,
-                        idGame: dataJson.idGame
-                    };
-
-                    if(dataJson.idGame){
-                        //getStaticEvalList
-                        let conclusionString = JSON.stringify(gameReq.conclusion);
-                        let game = await estimationAnalysisModel.create({ game: gameReq.idGame, gameAnalysis: conclusionString });
-                        console.log("any game: ", game);
-                    }
-                    else{
-                        //getStaticEvalList
-                        let conclusionString = JSON.stringify(gameReq.conclusion);
-                        let game = await estimationAnalysisModel.create({ user: gameReq.userId, gameAnalysis: conclusionString });
-                        console.log("any game: ", game);
-                    }
-                }
-                else {
-                    // Create the response object with the request ID for correlation
-                    gameReq = {
-                        //answer: est,
-                        fen: dataJson.fen,
-                        answerBestMove: dataJson.answerBestMove,
-                        answerMove: dataJson.answerMove,
-                        answerNewFen: dataJson.answerNewFen,
-                        answerEstimate: dataJson.answerEstimate,
-                        requestId: dataJson.requestId
-                    };
-
-                    let position1 = parseFEN(gameReq.fen);
-                    console.log(position1);
-                    staticEval = getStaticEvalList(position1);
-                    console.log(staticEval);
-                }
-
-                // Publish the response to the exchange with the routing key of the request ID
-                await channelConsumer.sendToQueue("estimation-to-back", Buffer.from(JSON.stringify(gameReq)));
-
-                // Print information about the sent response
-                console.log("Response sent: " + JSON.stringify(gameReq));
-
-                // Подтверждение обработки сообщения
-                await channelConsumer.ack(data);
-            } catch (error) {
-                console.log("Error occurred: " + error.message);
-                // Reject the message and return it to the queue to be reprocessed
-                channelConsumer.nack(data);
-            }
-
-        }, { noAck: false });
-        
-    } catch (error) {
-        console.log(error)
-    }
-}
-
-function parseFEN(fen) {
-    var board = new Array(8);
-    for (var i = 0; i < 8; i++) board[i] = new Array(8);
-    var a = fen.replace(/^\s+/, '').split(' '),
-        s = a[0],
-        x, y;
-    for (x = 0; x < 8; x++)
-        for (y = 0; y < 8; y++) {
-            board[x][y] = '-';
-        }
-    x = 0, y = 0;
-    for (var i = 0; i < s.length; i++) {
-        if (s[i] == ' ') break;
-        if (s[i] == '/') {
-            x = 0;
-            y++;
-        } else {
-            if (!bounds(x, y)) continue;
-            if ('KQRBNP'.indexOf(s[i].toUpperCase()) != -1) {
-                board[x][y] = s[i];
-                x++;
-            } else if ('0123456789'.indexOf(s[i]) != -1) {
-                x += parseInt(s[i]);
-            } else x++;
-        }
-    }
-    var castling, enpassant, whitemove = !(a.length > 1 && a[1] == 'b');
-    if (a.length > 2) {
-        castling = [a[2].indexOf('K') != -1, a[2].indexOf('Q') != -1,
-            a[2].indexOf('k') != -1, a[2].indexOf('q') != -1
-        ];
-    } else {
-        castling = [true, true, true, true];
-    }
-    if (a.length > 3 && a[3].length == 2) {
-        var ex = 'abcdefgh'.indexOf(a[3][0]);
-        var ey = '87654321'.indexOf(a[3][1]);
-        enpassant = (ex >= 0 && ey >= 0) ? [ex, ey] : null;
-    } else {
-        enpassant = null;
-    }
-    var movecount = [(a.length > 4 && !isNaN(a[4]) && a[4] != '') ? parseInt(a[4]) : 0,
-        (a.length > 5 && !isNaN(a[5]) && a[5] != '') ? parseInt(a[5]) : 1
-    ];
-    return {
-        b: board,
-        c: castling,
-        e: enpassant,
-        w: whitemove,
-        m: movecount
-    };
-}
-
-function generateFEN(pos) {
-    var s = '',
-        f = 0,
-        castling = pos.c,
-        enpassant = pos.e,
-        board = pos.b;
-    for (var y = 0; y < 8; y++) {
-        for (var x = 0; x < 8; x++) {
-            if (board[x][y] == '-') {
-                f++;
-            } else {
-                if (f > 0) s += f, f = 0;
-                s += board[x][y];
-            }
-        }
-        if (f > 0) s += f, f = 0;
-        if (y < 7) s += '/';
-    }
-    s += ' ' + (pos.w ? 'w' : 'b') +
-        ' ' + ((castling[0] || castling[1] || castling[2] || castling[3]) ?
-            ((castling[0] ? 'K' : '') + (castling[1] ? 'Q' : '') +
-                (castling[2] ? 'k' : '') + (castling[3] ? 'q' : '')) :
-            '-') +
-        ' ' + (enpassant == null ? '-' : ('abcdefgh' [enpassant[0]] + '87654321' [enpassant[1]])) +
-        ' ' + pos.m[0] + ' ' + pos.m[1];
-    return s;
-}
-
-function getStaticEvalList(pos) {
-    var posfen = generateFEN(pos);
-    for (var si = 0; si < _staticEvalListCache.length; si++)
-        if (_staticEvalListCache[si][0] == posfen) return _staticEvalListCache[si][1];
-
-    var data = _staticEvalData;
-    var grouplist = [],
-        midindex = null,
-        endindex = null,
-        maincode = null;
-    for (var i = 0; i < data.length; i++) {
-        if (data[i].name == "Middle game evaluation") midindex = i;
-        if (data[i].name == "End game evaluation") endindex = i;
-        if (data[i].name == "Main evaluation") maincode = data[i].code;
-    }
-    if (midindex == null || endindex == null || maincode == null) return;
-    var zero = function() {
-        return 0;
-    };
-    for (var i = 0; i < data.length; i++) {
-        var n = data[i].name.toLowerCase().replace(/ /g, "_");
-        while (i != midindex && i != endindex && maincode.indexOf("$" + n + "(") >= 0) {
-            try {
-                maincode = maincode.replace("$" + n + "(", "(function(){return " + eval("$" + n + "(pos)") + ";})(");
-            } catch (e) {
-                console.log(e.message);
-                return [];
-            }
-        }
-        if (data[midindex].code.indexOf("$" + n + "(") < 0 &&
-            data[endindex].code.indexOf("$" + n + "(") < 0) continue;
-        var code = data[i].code,
-            list = [];
-        for (var j = 0; j < data.length; j++) {
-            if (!data[j].graph || data[j].group != data[i].group || i == j) continue;
-            var n2 = data[j].name.toLowerCase().replace(/ /g, "_");
-            code = code.replace("$" + n2 + "(", "$g-" + n2 + "(").replace("$" + n2 + "(", "$g-" + n2 + "(");
-            list.push(n2);
-        }
-        if (data[i].graph) list.push(n);
-        for (var j = 0; j < list.length; j++) {
-            var n2 = list[j];
-            if (code.indexOf("$g-" + n2 + "(") < 0 && !data[i].graph) continue;
-            var mw = 0,
-                mb = 0,
-                ew = 0,
-                eb = 0,
-                func = null;
-            try {
-                eval("func = " + code.replace("$g-" + n2 + "(", "$" + n2 + "(")
-                    .replace("$g-" + n2 + "(", "$" + n2 + "(")
-                    .replace(/\$g\-[a-z_]+\(/g, "zero(") + ";");
-                if (data[midindex].code.indexOf("$" + n + "(pos") >= 0) mw = func(pos);
-                if (data[midindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) mb = func(colorflip(pos));
-                if (data[endindex].code.indexOf("$" + n + "(pos") >= 0) ew = func(pos);
-                if (data[endindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) eb = func(colorflip(pos));
-            } catch (e) {
-                alert(e.message);
-                return [];
-            }
-            var evals = [mw - mb, ew - eb];
-            var index = grouplist.map(function(e) {
-                return e.elem;
-            }).indexOf(n2);
-            if (index < 0) {
-                grouplist.push({
-                    group: data[i].group,
-                    elem: n2,
-                    item: evals,
-                    hidden: false,
-                    mc: pos.m[1]
-                });
-            } else {
-                grouplist[index].item[0] += evals[0];
-                grouplist[index].item[1] += evals[1];
-            }
-        }
-
-    }
-    grouplist.sort(function(a, b) {
-        return (a.group > b.group) ? 1 : ((b.group > a.group) ? -1 : 0);
-    });
-    maincode = maincode.replace("function $$(pos)", "function $$(PMG,PEG)")
-        .replace("$middle_game_evaluation(pos)", "PMG")
-        .replace("$end_game_evaluation(pos)", "PEG")
-    var mainfunc = eval("(" + maincode + ")");
-    for (var i = 0; i < grouplist.length; i++) {
-        grouplist[i].item.push(mainfunc(grouplist[i].item[0], grouplist[i].item[1]) - mainfunc(0, 0));
-    }
-    grouplist.push({
-        group: "Tempo",
-        elem: "tempo",
-        item: [mainfunc(0, 0), mainfunc(0, 0), mainfunc(0, 0)],
-        hidden: false,
-        mc: pos.m[1]
-    });
-
-    _staticEvalListCache.push([posfen, grouplist]);
-    if (_staticEvalListCache.length > _staticEvalListCacheSize) _staticEvalListCache.shift();
-    return grouplist;
-}
 
 _staticEvalData = (function() {
     var data = [],
@@ -1868,13 +1585,415 @@ _staticEvalData = (function() {
     return data;
 })();
 
+connectQueue(); // call connectQueue function
+
+function connectQueue() {
+    let fen1 = 'r1bqkb1r/ppp2ppp/2n2n2/3pp1N1/2B1P3/8/PPPP1PPP/RNBQK2R w KQkq - 0 5';
+    let position1 = parseFEN(fen1);
+    var staticEvalList = getStaticEvalList(position1), 
+        total = 0,
+        ci = 5;
+    //console.log(staticEvalList);
+
+    for (var i = 0; i < staticEvalList.length; i++) {
+        if (i > 0 && staticEvalList[i - 1].group != staticEvalList[i].group) ci++;
+        var c1 = 0,
+            c2 = 0,
+            c3 = 0;
+        while (c1 + c2 + c3 == 0) {
+            c1 = 22 + (ci % 2) * 216;
+            c2 = 22 + (((ci / 2) << 0) % 3) * 108;
+            c3 = 22 + ((((ci / 6) << 0)) % 2) * 216;
+            if (c1 + c2 + c3 < 100) {
+                c1 = c2 = c3 = 0;
+                ci++;
+            }
+        }
+        staticEvalList[i].bgcol = "rgb(" + c1 + "," + c2 + "," + c3 + ")";
+        staticEvalList[i].rel = staticEvalList[i].item[2] - (staticEvalListLast == null ? 0 : staticEvalListLast[i].item[2]);
+    }
+    var sortArray = [];
+    for (var i = 0; i < staticEvalList.length; i++) sortArray.push({
+        value: _staticSortByChange ? staticEvalList[i].rel : staticEvalList[i].item[2],
+        index: i
+    });
+    sortArray.sort(function(a, b) {
+        return (Math.abs(a.value) < Math.abs(b.value)) ? 1 : Math.abs(a.value) > Math.abs(b.value) ? -1 : 0;
+    });
+    console.log(sortArray);
+    /*
+    for (var j = 0; j < sortArray.length; j++) {
+        var i = sortArray[j].index;
+        total += staticEvalList[i].item[2];
+        var text = (staticEvalList[i].item[2] / evalUnit).toFixed(2);
+        if (text == "-0.00") text = "0.00";
+        var rel = (staticEvalList[i].rel / evalUnit).toFixed(2);
+        if (rel == "-0.00") rel = "0.00";
+        if (!_staticSortByChange && text == "0.00") continue;
+        if (_staticSortByChange && rel == "0.00") continue;
+
+        var node0 = document.createElement("SPAN");
+        node0.className = "circle";
+        node0.style.backgroundColor = staticEvalList[i].bgcol;
+
+        var node1 = document.createElement("DIV");
+        node1.className = "line";
+        var node2 = document.createElement("SPAN");
+        node2.className = "group";
+        node2.appendChild(document.createTextNode(staticEvalList[i].group));
+        var node6 = document.createElement("SPAN");
+        node6.className = "name";
+        node6.appendChild(document.createTextNode(staticEvalList[i].elem[0].toUpperCase() + staticEvalList[i].elem.replace(/\_/g, " ").substring(1)));
+
+        var node3 = document.createElement("SPAN");
+        node3.className = "eval";
+        if (text.indexOf(".") >= 0) {
+            var node4 = document.createElement("SPAN");
+            node4.className = "numleft";
+            node4.appendChild(document.createTextNode(text.substring(0, text.indexOf(".") + 1)));
+            var node5 = document.createElement("SPAN");
+            node5.className = "numright";
+            node5.appendChild(document.createTextNode(text.substring(text.indexOf(".") + 1)));
+            node3.appendChild(node4);
+            node3.appendChild(node5);
+        } else {
+            node3.appendChild(document.createTextNode(text));
+        }
+
+        var node7 = document.createElement("SPAN");
+        node7.className = "eval rel";
+        if (rel.indexOf(".") >= 0) {
+            var node8 = document.createElement("SPAN");
+            node8.className = "numleft";
+            node8.appendChild(document.createTextNode(rel.substring(0, rel.indexOf(".") + 1)));
+            var node9 = document.createElement("SPAN");
+            node9.className = "numright";
+            node9.appendChild(document.createTextNode(rel.substring(rel.indexOf(".") + 1)));
+            node7.appendChild(node8);
+            node7.appendChild(node9);
+        } else {
+            node3.appendChild(document.createTextNode(rel));
+        }
+        node1.appendChild(node0);
+        node1.appendChild(node2);
+        node1.appendChild(node6);
+        node1.appendChild(node3);
+        node1.appendChild(node7);
+        node1.name = staticEvalList[i].elem.toLowerCase().replace(/ /g, "_");;
+        node1.onclick = function() {
+            var data = _staticEvalData,
+                sei = null;
+            for (var j = 0; j < data.length; j++) {
+                var n = data[j].name.toLowerCase().replace(/ /g, "_");
+                if (n == this.name) sei = data[j];
+            }
+            if (sei == null) return;
+            var func = null,
+                n2 = this.name.toLowerCase().replace(/ /g, "_");
+            try {
+                eval("func = $" + n2 + ";");
+            } catch (e) {}
+            var elem = document.getElementById('chessboard1');
+            for (var i = 0; i < elem.children.length; i++) {
+                var div = elem.children[i];
+                if (div.tagName != 'DIV' || div.style.zIndex > 0) continue;
+                var x = parseInt(div.style.left.replace("px", "")) / 40;
+                var y = parseInt(div.style.top.replace("px", "")) / 40;
+                if (_flip) {
+                    x = 7 - x;
+                    y = 7 - y;
+                }
+                var sqeval = 0;
+                if (n2 == "king_danger") {
+                    sqeval = $unsafe_checks(pos, {
+                        x: x,
+                        y: y
+                    });
+                    if (sqeval == 0) sqeval = $unsafe_checks(colorflip(pos), {
+                        x: x,
+                        y: 7 - y
+                    });
+                    if (sqeval == 0) sqeval = $weak_bonus(pos, {
+                        x: x,
+                        y: y
+                    });
+                    if (sqeval == 0) sqeval = $weak_bonus(colorflip(pos), {
+                        x: x,
+                        y: 7 - y
+                    });
+                    var showKDarrows = function(p, flipy) {
+                        for (var x2 = 0; x2 < 8; x2++)
+                            for (var y2 = 0; y2 < 8; y2++) {
+                                if ("PNBRQ".indexOf(board(p, x, y)) < 0) continue;
+                                var s = {
+                                        x: x,
+                                        y: y
+                                    },
+                                    s2 = {
+                                        x: x2,
+                                        y: y2
+                                    },
+                                    a = false;
+                                if ($king_ring(p, s2)) {
+                                    if ($pawn_attack(p, s2) && Math.abs(x - x2) == 1 && y - y2 == flipy ? 1 : -1 ||
+                                        $knight_attack(p, s2, s) ||
+                                        $bishop_xray_attack(p, s2, s) ||
+                                        $rook_xray_attack(p, s2, s) ||
+                                        $queen_attack(p, s2, s)) a = false;
+                                }
+                                if (!a && $knight_attack(p, s2, s) && $safe_check(p, s2, 0) > 0) a = true;
+                                if (!a && $bishop_xray_attack(p, s2, s) && $safe_check(p, s2, 1) > 0) a = true;
+                                if (!a && $rook_xray_attack(p, s2, s) && $safe_check(p, s2, 2) > 0) a = true;
+                                if (!a && $queen_attack(p, s2, s) && $safe_check(p, s2, 3) > 0) a = true;
+                                if (a) {
+                                    if (!flipy) showArrow3({
+                                        from: s,
+                                        to: s2
+                                    });
+                                    else showArrow3({
+                                        from: {
+                                            x: x,
+                                            y: 7 - y
+                                        },
+                                        to: {
+                                            x: x2,
+                                            y: 7 - y2
+                                        }
+                                    });
+                                    finalArrow3();
+                                }
+                            }
+                    };
+                    showKDarrows(pos, false);
+                    showKDarrows(colorflip(pos), true);
+                } else {
+                    try {
+                        sqeval = func(pos, {
+                            x: x,
+                            y: y
+                        });
+                        if (sqeval == 0 && sei.forwhite) sqeval = func(colorflip(pos), {
+                            x: x,
+                            y: 7 - y
+                        });
+                        if (sqeval == 0) sqeval = func(pos, {
+                            x: x,
+                            y: y
+                        }, true);
+                        if (sqeval == 0 && sei.forwhite) sqeval = func(colorflip(pos), {
+                            x: x,
+                            y: 7 - y
+                        }, true);
+                    } catch (e) {}
+                }
+                var c = div.className.split(' ')[0] + " " + div.className.split(' ')[1];
+                if (div.className.indexOf(" h2") >= 0) c += " h2";
+                if (sqeval != 0) c += " h3";
+                div.className = c;
+            }
+        };
+        elem.appendChild(node1);
+    }
+    */
+
+    console.log("end");
+}
+
+function parseFEN(fen) {
+    var board = new Array(8);
+    for (var i = 0; i < 8; i++) board[i] = new Array(8);
+    var a = fen.replace(/^\s+/, '').split(' '),
+        s = a[0],
+        x, y;
+    for (x = 0; x < 8; x++)
+        for (y = 0; y < 8; y++) {
+            board[x][y] = '-';
+        }
+    x = 0, y = 0;
+    for (var i = 0; i < s.length; i++) {
+        if (s[i] == ' ') break;
+        if (s[i] == '/') {
+            x = 0;
+            y++;
+        } else {
+            if (!bounds(x, y)) continue;
+            if ('KQRBNP'.indexOf(s[i].toUpperCase()) != -1) {
+                board[x][y] = s[i];
+                x++;
+            } else if ('0123456789'.indexOf(s[i]) != -1) {
+                x += parseInt(s[i]);
+            } else x++;
+        }
+    }
+    var castling, enpassant, whitemove = !(a.length > 1 && a[1] == 'b');
+    if (a.length > 2) {
+        castling = [a[2].indexOf('K') != -1, a[2].indexOf('Q') != -1,
+            a[2].indexOf('k') != -1, a[2].indexOf('q') != -1
+        ];
+    } else {
+        castling = [true, true, true, true];
+    }
+    if (a.length > 3 && a[3].length == 2) {
+        var ex = 'abcdefgh'.indexOf(a[3][0]);
+        var ey = '87654321'.indexOf(a[3][1]);
+        enpassant = (ex >= 0 && ey >= 0) ? [ex, ey] : null;
+    } else {
+        enpassant = null;
+    }
+    var movecount = [(a.length > 4 && !isNaN(a[4]) && a[4] != '') ? parseInt(a[4]) : 0,
+        (a.length > 5 && !isNaN(a[5]) && a[5] != '') ? parseInt(a[5]) : 1
+    ];
+    return {
+        b: board,
+        c: castling,
+        e: enpassant,
+        w: whitemove,
+        m: movecount
+    };
+}
+
+function generateFEN(pos) {
+    var s = '',
+        f = 0,
+        castling = pos.c,
+        enpassant = pos.e,
+        board = pos.b;
+    for (var y = 0; y < 8; y++) {
+        for (var x = 0; x < 8; x++) {
+            if (board[x][y] == '-') {
+                f++;
+            } else {
+                if (f > 0) s += f, f = 0;
+                s += board[x][y];
+            }
+        }
+        if (f > 0) s += f, f = 0;
+        if (y < 7) s += '/';
+    }
+    s += ' ' + (pos.w ? 'w' : 'b') +
+        ' ' + ((castling[0] || castling[1] || castling[2] || castling[3]) ?
+            ((castling[0] ? 'K' : '') + (castling[1] ? 'Q' : '') +
+                (castling[2] ? 'k' : '') + (castling[3] ? 'q' : '')) :
+            '-') +
+        ' ' + (enpassant == null ? '-' : ('abcdefgh' [enpassant[0]] + '87654321' [enpassant[1]])) +
+        ' ' + pos.m[0] + ' ' + pos.m[1];
+    return s;
+}
+
+function getStaticEvalList(pos) {
+    var posfen = generateFEN(pos);
+    for (var si = 0; si < _staticEvalListCache.length; si++)
+        if (_staticEvalListCache[si][0] == posfen) return _staticEvalListCache[si][1];
+
+    var data = _staticEvalData;
+    var grouplist = [],
+        midindex = null,
+        endindex = null,
+        maincode = null;
+    for (var i = 0; i < data.length; i++) {
+        if (data[i].name == "Middle game evaluation") midindex = i;
+        if (data[i].name == "End game evaluation") endindex = i;
+        if (data[i].name == "Main evaluation") maincode = data[i].code;
+    }
+    if (midindex == null || endindex == null || maincode == null) return;
+    var zero = function() {
+        return 0;
+    };
+    for (var i = 0; i < data.length; i++) {
+        var n = data[i].name.toLowerCase().replace(/ /g, "_");
+        while (i != midindex && i != endindex && maincode.indexOf("$" + n + "(") >= 0) {
+            try {
+                maincode = maincode.replace("$" + n + "(", "(function(){return " + eval("$" + n + "(pos)") + ";})(");
+            } catch (e) {
+                console.log(e.message);
+                return [];
+            }
+        }
+        if (data[midindex].code.indexOf("$" + n + "(") < 0 &&
+            data[endindex].code.indexOf("$" + n + "(") < 0) continue;
+        var code = data[i].code,
+            list = [];
+        for (var j = 0; j < data.length; j++) {
+            if (!data[j].graph || data[j].group != data[i].group || i == j) continue;
+            var n2 = data[j].name.toLowerCase().replace(/ /g, "_");
+            code = code.replace("$" + n2 + "(", "$g-" + n2 + "(").replace("$" + n2 + "(", "$g-" + n2 + "(");
+            list.push(n2);
+        }
+        if (data[i].graph) list.push(n);
+        for (var j = 0; j < list.length; j++) {
+            var n2 = list[j];
+            if (code.indexOf("$g-" + n2 + "(") < 0 && !data[i].graph) continue;
+            var mw = 0,
+                mb = 0,
+                ew = 0,
+                eb = 0,
+                func = null;
+            try {
+                eval("func = " + code.replace("$g-" + n2 + "(", "$" + n2 + "(")
+                    .replace("$g-" + n2 + "(", "$" + n2 + "(")
+                    .replace(/\$g\-[a-z_]+\(/g, "zero(") + ";");
+                if (data[midindex].code.indexOf("$" + n + "(pos") >= 0) mw = func(pos);
+                if (data[midindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) mb = func(colorflip(pos));
+                if (data[endindex].code.indexOf("$" + n + "(pos") >= 0) ew = func(pos);
+                if (data[endindex].code.indexOf("$" + n + "(colorflip(pos)") >= 0) eb = func(colorflip(pos));
+            } catch (e) {
+                alert(e.message);
+                return [];
+            }
+            var evals = [mw - mb, ew - eb];
+            var index = grouplist.map(function(e) {
+                return e.elem;
+            }).indexOf(n2);
+            if (index < 0) {
+                grouplist.push({
+                    group: data[i].group,
+                    elem: n2,
+                    item: evals,
+                    hidden: false,
+                    mc: pos.m[1]
+                });
+            } else {
+                grouplist[index].item[0] += evals[0];
+                grouplist[index].item[1] += evals[1];
+            }
+        }
+
+    }
+    grouplist.sort(function(a, b) {
+        return (a.group > b.group) ? 1 : ((b.group > a.group) ? -1 : 0);
+    });
+    maincode = maincode.replace("function $$(pos)", "function $$(PMG,PEG)")
+        .replace("$middle_game_evaluation(pos)", "PMG")
+        .replace("$end_game_evaluation(pos)", "PEG")
+    var mainfunc = eval("(" + maincode + ")");
+    for (var i = 0; i < grouplist.length; i++) {
+        grouplist[i].item.push(mainfunc(grouplist[i].item[0], grouplist[i].item[1]) - mainfunc(0, 0));
+    }
+    grouplist.push({
+        group: "Tempo",
+        elem: "tempo",
+        item: [mainfunc(0, 0), mainfunc(0, 0), mainfunc(0, 0)],
+        hidden: false,
+        mc: pos.m[1]
+    });
+
+    _staticEvalListCache.push([posfen, grouplist]);
+    if (_staticEvalListCache.length > _staticEvalListCacheSize) _staticEvalListCache.shift();
+    return grouplist;
+}
+
+//!!!
 function sum(pos, func, param) {
     var sum = 0;
     for (var x = 0; x < 8; x++)
-        for (var y = 0; y < 8; y++) sum += func(pos, {
+        for (var y = 0; y < 8; y++){
+            let x1 = func(pos, {
             x: x,
             y: y
         }, param);
+            //console.log(x1);
+            sum += x1;
+        }
     return sum;
 }
 
@@ -1950,9 +2069,6 @@ function bounds(x, y) {
     return x >= 0 && x <= 7 && y >= 0 && y <= 7;
 }
 
-
-var _staticEvalListCache = [],
-    _staticEvalListCacheSize = 20;
 /*
 const Board = new BoardInGame('r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3');
 Board.MaterialEstimate();
